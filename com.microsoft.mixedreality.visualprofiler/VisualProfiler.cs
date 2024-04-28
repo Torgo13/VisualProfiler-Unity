@@ -212,7 +212,7 @@ namespace Microsoft.MixedReality.Profiling
             {
                 // If the current XR SDK does not report refresh rate information, assume 60Hz.
                 float refreshRate = 0;
-#if ENABLE_VR
+#if ENABLE_VR && ENABLE_XR_MODULE
                 refreshRate = UnityEngine.XR.XRDevice.refreshRate;
 #endif
                 return ((int)refreshRate == 0) ? defaultFrameRate : refreshRate;
