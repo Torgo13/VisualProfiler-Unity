@@ -82,7 +82,7 @@ namespace Microsoft.MixedReality.Profiling
         private float missedFramePercentage = 0.9f;
 
         /// <summary>
-        /// A missed frame is considered when the frame rate is less than the target frame rate times the missed frame percentage."
+        /// A missed frame is considered when the frame rate is less than the target frame rate times the missed frame percentage.
         /// </summary>
         public float MissedFramePercentage
         {
@@ -254,15 +254,21 @@ namespace Microsoft.MixedReality.Profiling
             }
         }
 
+#if UNITY_STANDALONE_WIN || UNITY_WSA
         [SerializeField, Tooltip("Voice commands to toggle the profiler on and off. (Supported in UWP only.)")]
-        private string[] toggleKeyworlds = new string[] { "Profiler", "Toggle Profiler", "Show Profiler", "Hide Profiler" };
+        private readonly string[] toggleKeywords = new string[] { "Profiler", "Toggle Profiler", "Show Profiler", "Hide Profiler" };
+#endif // UNITY_STANDALONE_WIN || UNITY_WSA
+        
+#if ENABLE_PROFILER
+        static readonly string[] samplerNames = new string[] { "SRPBRender.ApplyShader", "SRPBShadow.ApplyShader", "StdRender.ApplyShader", "StdShadow.ApplyShader" };
+#endif // ENABLE_PROFILER
 
         [Header("Visual Settings")]
-        [SerializeField, Range(0, 31), Tooltip("The layer index used for rendering the profiler (range between 0, 31 inclusive). Can be used in conjuction with a camera's \"Culling Mask\" to chose which camera renders the profiler.")]
+        [SerializeField, Range(0, 31), Tooltip("The layer index used for rendering the profiler (range between 0, 31 inclusive). Can be used in conjunction with a camera's \"Culling Mask\" to chose which camera renders the profiler.")]
         private int layer = 0;
 
         /// <summary>
-        /// The layer index used for rendering the profiler (range between 0, 31 inclusive). Can be used in conjuction with a camera's \"Culling Mask\" to chose which camera renders the profiler.
+        /// The layer index used for rendering the profiler (range between 0, 31 inclusive). Can be used in conjunction with a camera's \"Culling Mask\" to chose which camera renders the profiler.
         /// </summary>
         public int Layer
         {
@@ -548,14 +554,14 @@ namespace Microsoft.MixedReality.Profiling
         private char[][] qualityLevelStrings = new char[0][];
         private char[][] frameRateStrings = new char[maxTargetFrameRate + 1][];
         private char[][] gpuFrameRateStrings = new char[maxTargetFrameRate + 1][];
-        private Vector4[] characterUVs = new Vector4[128];
+        private readonly Vector4[] characterUVs = new Vector4[128];
         private Vector3 characterScale = Vector3.zero;
 
         // UI state.
         private Vector3 windowPosition = Vector3.zero;
         private Quaternion windowRotation = Quaternion.identity;
 
-        private class TextData
+        private sealed class TextData
         {
             public string Prefix;
             public Vector3 Position;
@@ -590,7 +596,7 @@ namespace Microsoft.MixedReality.Profiling
         private Quaternion windowVerticalRotation = Quaternion.identity;
         private Quaternion windowVerticalRotationInverse = Quaternion.identity;
 
-        private char[] stringBuffer = new char[256];
+        private readonly char[] stringBuffer = new char[256];
 
         private int qualityLevel = -1;
         private int cpuFrameRate = -1;
@@ -608,7 +614,7 @@ namespace Microsoft.MixedReality.Profiling
         private float accumulatedFrameTimeCPU = 0.0f;
         private float accumulatedFrameTimeGPU = 0.0f;
         private float frameSampleRateMS = 0.0f;
-        private FrameTiming[] frameTimings = new FrameTiming[1];
+        private readonly FrameTiming[] frameTimings = new FrameTiming[1];
 #if !UNITY_EDITOR
         private ProfilerRecorder batchesRecorder;
         private ProfilerRecorder drawCallsRecorder;
@@ -660,13 +666,28 @@ namespace Microsoft.MixedReality.Profiling
                 InternalUpdate();
             }
         }
+        
+#if UNITY_6000_0_OR_NEWER
+        async Awaitable CustomUpdateAsync(System.Threading.CancellationToken ct)
+        {
+            while (!ct.IsCancellationRequested && systemUsedMemoryRecorder.Valid)
+            {
+                CustomUpdate();
+                await Awaitable.EndOfFrameAsync();
+            }
+        }
+#endif // UNITY_6000_0_OR_NEWER
 
         private void OnEnable()
         {
+#if DEBUG
             if (material == null)
             {
                 Debug.LogError("The VisualProfiler is missing a material and will not display.");
+                enabled = false;
+                return;
             }
+#endif // DEBUG
 
             // Create a quad mesh with artificially large bounds to disable culling for instanced rendering.
             // TODO - [Cameron-Micka] Use shared mesh with normal bounds once Unity allows for more control over instance culling.
@@ -694,7 +715,6 @@ namespace Microsoft.MixedReality.Profiling
             meshStatsRecorder = ProfilerRecorder.StartNew(ProfilerCategory.Render, displayTriangleCount ? "Triangles Count" : "Vertices Count");
 #endif
 #if ENABLE_PROFILER
-            var samplerNames = new string[] { "SRPBRender.ApplyShader", "SRPBShadow.ApplyShader", "StdRender.ApplyShader", "StdShadow.ApplyShader" };
             srpBatchesRecorders = new Recorder[samplerNames.Length];
 
             for (int i  = 0; i < samplerNames.Length; ++i)
@@ -720,6 +740,10 @@ namespace Microsoft.MixedReality.Profiling
 #if UNITY_STANDALONE_WIN || UNITY_WSA
             BuildKeywordRecognizer();
 #endif
+            
+#if ZERO // UNITY_6000_0_OR_NEWER
+            _ = CustomUpdateAsync(destroyCancellationToken);
+#endif // ZERO // UNITY_6000_0_OR_NEWER
         }
 
         private void OnDisable()
@@ -749,6 +773,7 @@ namespace Microsoft.MixedReality.Profiling
 
         private void OnValidate()
         {
+            instancePropertyBlock = new MaterialPropertyBlock();
             BuildWindow();
         }
 
@@ -786,24 +811,24 @@ namespace Microsoft.MixedReality.Profiling
             if (IsVisible)
             {
                 // Update window transformation.
-                Transform cameraTransform = Camera.main ? Camera.main.transform : null;
-
-                if (cameraTransform != null)
+                Camera mainCamera = Camera.main;
+                if (mainCamera != null)
                 {
-                    Vector3 targetPosition = CalculateWindowPosition(cameraTransform);
-                    Quaternion targetRotaton = CalculateWindowRotation(cameraTransform);
+                    mainCamera.transform.GetPositionAndRotation(out Vector3 cameraPosition, out Quaternion cameraRotation);
+                    Vector3 targetPosition = CalculateWindowPosition(mainCamera, cameraRotation, cameraPosition);
+                    Quaternion targetRotation = CalculateWindowRotation(cameraRotation);
 
                     if (snapWindow)
                     {
                         windowPosition = targetPosition;
-                        windowRotation = targetRotaton;
+                        windowRotation = targetRotation;
                     }
                     else
                     {
                         float t = Time.deltaTime * windowFollowSpeed;
                         windowPosition = Vector3.Lerp(windowPosition, targetPosition, t);
                         // Lerp rather than slerp for speed over quality.
-                        windowRotation = Quaternion.Lerp(windowRotation, targetRotaton, t);
+                        windowRotation = Quaternion.Lerp(windowRotation, targetRotation, t);
                     }
                 }
 
@@ -1068,10 +1093,20 @@ namespace Microsoft.MixedReality.Profiling
                     instanceUVOffsetScaleXDirty = false;
                 }
 
-                if (material != null)
+#if ZERO // UNITY_6000_3_OR_NEWER
+                RenderParams renderParams = new RenderParams
                 {
-                    Graphics.DrawMeshInstanced(quadMesh, 0, material, instanceMatrices, instanceMatrices.Length, instancePropertyBlock, UnityEngine.Rendering.ShadowCastingMode.Off, false, layer);
-                }
+                    layer = layer,
+                    motionVectorMode = MotionVectorGenerationMode.ForceNoMotion,
+                    material = material,
+                    matProps = instancePropertyBlock,
+                    shadowCastingMode = ShadowCastingMode.Off,
+                };
+                
+                Graphics.RenderMeshInstanced<Matrix4x4>(renderParams, quadMesh, 0, instanceMatrices);
+#else
+                Graphics.DrawMeshInstanced(quadMesh, 0, material, instanceMatrices, instanceMatrices.Length, instancePropertyBlock, UnityEngine.Rendering.ShadowCastingMode.Off, false, layer);
+#endif // ZERO // UNITY_6000_3_OR_NEWER
             }
             else
             {
@@ -1106,13 +1141,10 @@ namespace Microsoft.MixedReality.Profiling
 
             Vector3 defaultWindowSize = new Vector3(0.2f, 0.04f, 1.0f);
             float edge = defaultWindowSize.x * 0.5f;
-            float[] edges = new float[] { -edge, -0.03f, edge };
+            ReadOnlySpan<float> edges = stackalloc float[] { -edge, -0.03f, edge };
 
             // Set the default base color.
-            for (int i = 0; i < instanceBaseColors.Length; ++i)
-            {
-                instanceBaseColors[i] = baseColor;
-            }
+            instanceBaseColors.AsSpan().Fill((Vector4)baseColor);
 
             // Add a window back plate.
             {
@@ -1248,11 +1280,9 @@ namespace Microsoft.MixedReality.Profiling
             instanceUVOffsetScaleXDirty = true;
 
             // Initialize property block state.
-            if (instancePropertyBlock != null && material != null && material.mainTexture != null)
-            {
-                instancePropertyBlock.SetVector(fontScaleID, new Vector2((float)fontCharacterSize.x / material.mainTexture.width,
-                                                                         (float)fontCharacterSize.y / material.mainTexture.height));
-            }
+            Texture mainTexture = material.mainTexture;
+            instancePropertyBlock.SetVector(fontScaleID, new Vector2((float)fontCharacterSize.x / mainTexture.width, 
+                                                                     (float)fontCharacterSize.y / mainTexture.height));
 
             Refresh();
         }
@@ -1278,7 +1308,7 @@ namespace Microsoft.MixedReality.Profiling
             string displayedDecimalFormat = string.Format("{{0:F{0}}}", displayedDecimalDigits);
 
             StringBuilder stringBuilder = new StringBuilder(32);
-            StringBuilder milisecondStringBuilder = new StringBuilder(16);
+            StringBuilder millisecondStringBuilder = new StringBuilder(16);
 
             // Display nothing for index zero.
             frameRateStrings[0] = ToCharArray(stringBuilder);
@@ -1287,36 +1317,43 @@ namespace Microsoft.MixedReality.Profiling
             for (int i = 1; i < frameRateStrings.Length; ++i)
             {
                 float milliseconds = (i == 0) ? 0.0f : (1.0f / i) * 1000.0f;
-                milisecondStringBuilder.AppendFormat(displayedDecimalFormat, milliseconds);
-
-                string frame = i.ToString();
-                string ms = milisecondStringBuilder.ToString();
+                millisecondStringBuilder.AppendFormat(displayedDecimalFormat, milliseconds);
 
                 if (i == (frameRateStrings.Length - 1))
                 {
-                    stringBuilder.AppendFormat(">{0}fps ({1}ms)", frame, ms);
+                    stringBuilder.Append('>');
                 }
-                else
+                
+                stringBuilder.Append(i).Append("fps (");
+                
+                for (int j = 0; j < millisecondStringBuilder.Length; j++)
                 {
-                    stringBuilder.AppendFormat("{0}fps ({1}ms)", frame, ms);
+                    stringBuilder.Append(millisecondStringBuilder[j]);
                 }
+                    
+                stringBuilder.Append("ms)");
 
                 frameRateStrings[i] = ToCharArray(stringBuilder);
 
                 stringBuilder.Length = 0;
+                
+                stringBuilder.Append("GPU: ");
 
                 if (i == (frameRateStrings.Length - 1))
                 {
-                    stringBuilder.AppendFormat("GPU: <{1}ms", frame, ms);
+                    stringBuilder.Append('<');
                 }
-                else
+                
+                for (int j = 0; j < millisecondStringBuilder.Length; j++)
                 {
-                    stringBuilder.AppendFormat("GPU: {1}ms", frame, ms);
+                    stringBuilder.Append(millisecondStringBuilder[j]);
                 }
+                    
+                stringBuilder.Append("ms");
 
                 gpuFrameRateStrings[i] = ToCharArray(stringBuilder);
 
-                milisecondStringBuilder.Length = 0;
+                millisecondStringBuilder.Length = 0;
                 stringBuilder.Length = 0;
             }
         }
@@ -1325,20 +1362,20 @@ namespace Microsoft.MixedReality.Profiling
         {
             characterScale = new Vector3(fontCharacterSize.x * fontScale.x, fontCharacterSize.y * fontScale.y, 1.0f);
 
-            if (material != null && material.mainTexture != null)
+            Texture mainTexture = material.mainTexture;
+            float w = 1f / mainTexture.width;
+            float h = 1f / mainTexture.height;
+            for (char c = ' '; c < characterUVs.Length; ++c)
             {
-                for (char c = ' '; c < characterUVs.Length; ++c)
-                {
-                    int index = c - ' ';
-                    float height = (float)fontCharacterSize.y / material.mainTexture.height;
-                    float x = ((float)(index % fontColumns) * fontCharacterSize.x) / material.mainTexture.width;
-                    float y = ((float)(index / fontColumns) * fontCharacterSize.y) / material.mainTexture.height;
-                    characterUVs[c] = new Vector4(x, 1.0f - height - y, 0.0f, 0.0f);
-                }
+                int index = c - ' ';
+                float height = (float)fontCharacterSize.y * h;
+                float x = ((float)(index % fontColumns) * fontCharacterSize.x) * w;
+                float y = ((float)(index / fontColumns) * fontCharacterSize.y) * h;
+                characterUVs[c] = new Vector4(x, 1.0f - height - y, 0.0f, 0.0f);
             }
         }
 
-        private Vector3 CalculateWindowPosition(Transform cameraTransform)
+        private Vector3 CalculateWindowPosition(Camera mainCamera, Quaternion cameraRotation, Vector3 cameraPosition = default)
         {
             Vector3 position;
 
@@ -1348,12 +1385,12 @@ namespace Microsoft.MixedReality.Profiling
             }
             else
             {
-                float windowDistance = Mathf.Max(16.0f / Camera.main.fieldOfView, Camera.main.nearClipPlane + 0.25f);
-                position = cameraTransform.position + (cameraTransform.forward * windowDistance);
+                float windowDistance = Mathf.Max(16.0f / mainCamera.fieldOfView, mainCamera.nearClipPlane + 0.25f);
+                position = cameraPosition + cameraRotation * Vector3.forward * windowDistance;
             }
 
-            Vector3 horizontalOffset = cameraTransform.right * windowOffset.x;
-            Vector3 verticalOffset = cameraTransform.up * windowOffset.y;
+            Vector3 horizontalOffset = cameraRotation * Vector3.right * windowOffset.x;
+            Vector3 verticalOffset = cameraRotation * Vector3.up * windowOffset.y;
 
             switch (windowAnchor)
             {
@@ -1370,10 +1407,8 @@ namespace Microsoft.MixedReality.Profiling
             return position;
         }
 
-        private Quaternion CalculateWindowRotation(Transform cameraTransform)
+        private Quaternion CalculateWindowRotation(Quaternion rotation)
         {
-            Quaternion rotation = cameraTransform.rotation;
-
             if (!alignToCamera)
             {
                 switch (windowAnchor)
@@ -1414,7 +1449,7 @@ namespace Microsoft.MixedReality.Profiling
             instanceUVOffsetScaleXDirty = true;
         }
 
-        void SetText(TextData data, char[] text, int count, Color color, int justifyLength = 0)
+        void SetText(TextData data, ReadOnlySpan<char> text, int count, Color color, int justifyLength = 0)
         {
             count = Mathf.Min(count, maxStringLength);
 
@@ -1472,9 +1507,9 @@ namespace Microsoft.MixedReality.Profiling
 
         private void BuildKeywordRecognizer()
         {
-            if (toggleKeyworlds.Length != 0)
+            if (toggleKeywords.Length != 0)
             {
-                keywordRecognizer = new KeywordRecognizer(toggleKeyworlds);
+                keywordRecognizer = new KeywordRecognizer(toggleKeywords);
                 keywordRecognizer.OnPhraseRecognized += OnPhraseRecognized;
 
                 keywordRecognizer.Start();
@@ -1487,7 +1522,7 @@ namespace Microsoft.MixedReality.Profiling
         }
 #endif
 
-        private void MemoryUsageToString(char[] buffer, int displayedDecimalDigits, TextData data, ulong memoryUsage, Color color, int justifyLength = 0)
+        private void MemoryUsageToString(Span<char> buffer, int displayedDecimalDigits, TextData data, ulong memoryUsage, Color color, int justifyLength = 0)
         {
             bool usingGigabytes = false;
             float usage = ConvertBytesToMegabytes(memoryUsage);
@@ -1500,10 +1535,8 @@ namespace Microsoft.MixedReality.Profiling
 
             int bufferIndex = 0;
 
-            for (int i = 0; i < data.Prefix.Length; ++i)
-            {
-                buffer[bufferIndex++] = data.Prefix[i];
-            }
+            data.Prefix.AsSpan().CopyTo(buffer);
+            bufferIndex += data.Prefix.Length;
 
             bufferIndex = FtoA(usage, displayedDecimalDigits, buffer, bufferIndex);
 
@@ -1513,14 +1546,12 @@ namespace Microsoft.MixedReality.Profiling
             SetText(data, buffer, bufferIndex, color, justifyLength);
         }
 
-        private void SceneStatsToString(char[] buffer, TextData data, long count, Color color, int justifyLength = 0)
+        private void SceneStatsToString(Span<char> buffer, TextData data, long count, Color color, int justifyLength = 0)
         {
             int bufferIndex = 0;
 
-            for (int i = 0; i < data.Prefix.Length; ++i)
-            {
-                buffer[bufferIndex++] = data.Prefix[i];
-            }
+            data.Prefix.AsSpan().CopyTo(buffer);
+            bufferIndex += data.Prefix.Length;
 
             if (count < 0)
             {
@@ -1540,14 +1571,12 @@ namespace Microsoft.MixedReality.Profiling
             SetText(data, buffer, bufferIndex, color, justifyLength);
         }
 
-        private void MeshStatsToString(char[] buffer, int displayedDecimalDigits, TextData data, long count, Color color, int justifyLength = 0)
+        private void MeshStatsToString(Span<char> buffer, int displayedDecimalDigits, TextData data, long count, Color color, int justifyLength = 0)
         {
             int bufferIndex = 0;
 
-            for (int i = 0; i < data.Prefix.Length; ++i)
-            {
-                buffer[bufferIndex++] = data.Prefix[i];
-            }
+            data.Prefix.AsSpan().CopyTo(buffer);
+            bufferIndex += data.Prefix.Length;
 
             bool usingMillions = false;
             float total = count / 1000.0f;
@@ -1565,14 +1594,12 @@ namespace Microsoft.MixedReality.Profiling
             SetText(data, buffer, bufferIndex, color, justifyLength);
         }
 
-        private void ProfilerValueToString(char[] buffer, int displayedDecimalDigits, TextData data, float value, string unitSuffix, Color color, int justifyLength = 0)
+        private void ProfilerValueToString(Span<char> buffer, int displayedDecimalDigits, TextData data, float value, ReadOnlySpan<char> unitSuffix, Color color, int justifyLength = 0)
         {
             int bufferIndex = 0;
 
-            for (int i = 0; i < data.Prefix.Length; ++i)
-            {
-                buffer[bufferIndex++] = data.Prefix[i];
-            }
+            data.Prefix.AsSpan().CopyTo(buffer);
+            bufferIndex += data.Prefix.Length;
 
             if (value >= 0.0f)
             {
@@ -1585,15 +1612,13 @@ namespace Microsoft.MixedReality.Profiling
                 buffer[bufferIndex++] = '-';
             }
 
-            foreach (char c in unitSuffix)
-            {
-                buffer[bufferIndex++] = c;
-            }
+            unitSuffix.CopyTo(buffer.Slice(start: bufferIndex));
+            bufferIndex += unitSuffix.Length;
 
             SetText(data, buffer, bufferIndex, color, justifyLength);
         }
 
-        private Color QualityLevelBudgetToColor(int[] qualityLevelBudget, long value)
+        private Color QualityLevelBudgetToColor(ReadOnlySpan<int> qualityLevelBudget, long value)
         {
             int level = QualitySettings.GetQualityLevel();
 
@@ -1617,7 +1642,7 @@ namespace Microsoft.MixedReality.Profiling
             return output;
         }
 
-        private static int ItoA(int value, char[] buffer, int bufferIndex)
+        private static int ItoA(int value, Span<char> buffer, int bufferIndex)
         {
             // Using a custom number to string method to avoid the overhead, and allocations, of built in string.Format/StringBuilder methods.
             // We can also make some assumptions since the domain of the input number is known.
@@ -1635,10 +1660,9 @@ namespace Microsoft.MixedReality.Profiling
                     buffer[bufferIndex++] = (char)((char)(value % 10) + '0');
                 }
 
-                char temp;
                 for (int endIndex = bufferIndex - 1; startIndex < endIndex; ++startIndex, --endIndex)
                 {
-                    temp = buffer[startIndex];
+                    char temp = buffer[startIndex];
                     buffer[startIndex] = buffer[endIndex];
                     buffer[endIndex] = temp;
                 }
@@ -1647,7 +1671,7 @@ namespace Microsoft.MixedReality.Profiling
             return bufferIndex;
         }
 
-        private static int FtoA(float value, int displayedDecimalDigits, char[] buffer, int bufferIndex)
+        private static int FtoA(float value, int displayedDecimalDigits, Span<char> buffer, int bufferIndex)
         {
             int integerDigits = (int)value;
             int fractionalDigits = (int)((value - integerDigits) * Mathf.Pow(10.0f, displayedDecimalDigits));
@@ -1665,10 +1689,8 @@ namespace Microsoft.MixedReality.Profiling
             }
             else
             {
-                for (int i = 0; i < displayedDecimalDigits; ++i)
-                {
-                    buffer[bufferIndex++] = '0';
-                }
+                buffer.Slice(bufferIndex, displayedDecimalDigits).Fill('0');
+                bufferIndex += displayedDecimalDigits;
             }
 
             return bufferIndex;
@@ -1684,8 +1706,8 @@ namespace Microsoft.MixedReality.Profiling
                 // "System Used Memory" will return the "working set" of the process which is similar to what Task Manager displays
                 // in Windows. But this is not available on all platforms (like WebGL) so instead return Profiler.GetTotalReservedMemoryLong()
                 // which is the total memory Unity has reserved for current and future allocations.
-                var usedMemory = (ulong)systemUsedMemoryRecorder.LastValue;
-                return (usedMemory != 0) ? usedMemory : (ulong)Profiler.GetTotalReservedMemoryLong();
+                var usedMemory = systemUsedMemoryRecorder.LastValue;
+                return (usedMemory != 0) ? (ulong)usedMemory : (ulong)Profiler.GetTotalReservedMemoryLong();
 #endif
             }
         }

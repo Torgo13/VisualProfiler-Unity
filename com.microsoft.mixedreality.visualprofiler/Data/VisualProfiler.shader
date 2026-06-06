@@ -13,9 +13,9 @@ Shader "Hidden/Visual Profiler"
         Pass
         {
             Name "Main"
-            Tags{ "RenderType" = "Opaque" }
+            Tags{ "RenderType" = "Opaque" "Queue" = "AlphaTest" "IgnoreProjector" = "True" "DisableBatching" = "True" }
             Blend Off
-            ZWrite On
+            ZWrite Off
             ZTest Always
             Cull Off
 
