@@ -1378,8 +1378,8 @@ namespace Microsoft.MixedReality.Profiling
             characterScale = new Vector3(fontCharacterSize.x * fontScale.x, fontCharacterSize.y * fontScale.y, 1.0f);
 
             Texture mainTexture = material.mainTexture;
-            float width = fontCharacterSize.x / mainTexture.width;
-            float height = fontCharacterSize.y / mainTexture.height;
+            float width = (float)fontCharacterSize.x / mainTexture.width;
+            float height = (float)fontCharacterSize.y / mainTexture.height;
             for (char c = ' '; c < characterUVs.Length; ++c)
             {
                 int index = c - ' ';
