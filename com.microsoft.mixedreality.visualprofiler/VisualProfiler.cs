@@ -37,6 +37,24 @@ namespace Microsoft.MixedReality.Profiling
     /// </summary>
     public sealed class VisualProfiler : MonoBehaviour, ISerializationCallbackReceiver
     {
+#if CUSTOM
+        private static readonly Vector3 defaultWindowSize = new Vector3(0.2f, 0.04f, 1.0f);
+
+        private Camera mainCamera;
+        private bool GetMainCamera(out Camera cam)
+        {
+            cam = mainCamera;
+
+            if (cam == null)
+            {
+                cam = mainCamera = Camera.main;
+                return cam != null;
+            }
+
+            return true;
+        }
+#endif // CUSTOM
+
         [Header("Profiler Settings")]
         [SerializeField, Tooltip("Is the profiler currently visible? If disabled, prevents the profiler from rendering but still allows it to track memory usage.")]
         private bool isVisible = true;
@@ -250,13 +268,13 @@ namespace Microsoft.MixedReality.Profiling
         {
             get
             {
-                return (1.0f / TargetFrameRate) * 1000.0f;
+                return 1000.0f / TargetFrameRate;
             }
         }
 
 #if UNITY_STANDALONE_WIN || UNITY_WSA
         [SerializeField, Tooltip("Voice commands to toggle the profiler on and off. (Supported in UWP only.)")]
-        private readonly string[] toggleKeywords = new string[] { "Profiler", "Toggle Profiler", "Show Profiler", "Hide Profiler" };
+        private string[] toggleKeywords = new string[] { "Profiler", "Toggle Profiler", "Show Profiler", "Hide Profiler" };
 #endif // UNITY_STANDALONE_WIN || UNITY_WSA
         
 #if ENABLE_PROFILER
@@ -811,8 +829,12 @@ namespace Microsoft.MixedReality.Profiling
             if (IsVisible)
             {
                 // Update window transformation.
+#if CUSTOM
+                if (GetMainCamera(out Camera mainCamera))
+#else
                 Camera mainCamera = Camera.main;
                 if (mainCamera != null)
+#endif // CUSTOM
                 {
                     mainCamera.transform.GetPositionAndRotation(out Vector3 cameraPosition, out Quaternion cameraRotation);
                     Vector3 targetPosition = CalculateWindowPosition(mainCamera, cameraRotation, cameraPosition);
@@ -878,7 +900,11 @@ namespace Microsoft.MixedReality.Profiling
                     int lastGpuFrameRate = Mathf.Min(Mathf.RoundToInt(SmoothGpuFrameRate), maxTargetFrameRate);
 
                     // TODO - [Cameron-Micka] Ideally we would query a device specific API (like the HolographicFramePresentationReport) to detect missed frames.
+#if CUSTOM
+                    bool missedFrame = lastCpuFrameRate < ((int)TargetFrameRate - 1);
+#else
                     bool missedFrame = lastCpuFrameRate < (int)(TargetFrameRate * missedFramePercentage);
+#endif // CUSTOM
                     Color frameColor = missedFrame ? missedFrameRateColor : targetFrameRateColor;
                     Vector4 frameIcon = missedFrame ? characterUVs['X'] : characterUVs[' '];
 
@@ -1103,7 +1129,7 @@ namespace Microsoft.MixedReality.Profiling
                     shadowCastingMode = ShadowCastingMode.Off,
                 };
                 
-                Graphics.RenderMeshInstanced<Matrix4x4>(renderParams, quadMesh, 0, instanceMatrices);
+                Graphics.RenderMeshInstanced(renderParams, quadMesh, submeshIndex: 0, instanceMatrices);
 #else
                 Graphics.DrawMeshInstanced(quadMesh, 0, material, instanceMatrices, instanceMatrices.Length, instancePropertyBlock, UnityEngine.Rendering.ShadowCastingMode.Off, false, layer);
 #endif // ZERO // UNITY_6000_3_OR_NEWER
@@ -1139,7 +1165,10 @@ namespace Microsoft.MixedReality.Profiling
 
             Vector4 spaceUV = characterUVs[' '];
 
+#if CUSTOM
+#else
             Vector3 defaultWindowSize = new Vector3(0.2f, 0.04f, 1.0f);
+#endif // CUSTOM
             float edge = defaultWindowSize.x * 0.5f;
             ReadOnlySpan<float> edges = stackalloc float[] { -edge, -0.03f, edge };
 
@@ -1296,8 +1325,7 @@ namespace Microsoft.MixedReality.Profiling
             for (int i = 0; i < names.Length; ++i)
             {
                 var name = prefix + names[i];
-                string shortName = (name.Length > maxStringLength) ? name.Substring(0, maxStringLength) : name;
-                qualityLevelStrings[i] = shortName.ToCharArray();
+                qualityLevelStrings[i] = name.ToCharArray(startIndex: 0, length: Mathf.Min(maxStringLength, name.Length));
             }
         }
 
@@ -1316,22 +1344,14 @@ namespace Microsoft.MixedReality.Profiling
 
             for (int i = 1; i < frameRateStrings.Length; ++i)
             {
-                float milliseconds = (i == 0) ? 0.0f : (1.0f / i) * 1000.0f;
-                millisecondStringBuilder.AppendFormat(displayedDecimalFormat, milliseconds);
+                millisecondStringBuilder.AppendFormat(displayedDecimalFormat, 1000.0 / i);
 
                 if (i == (frameRateStrings.Length - 1))
                 {
                     stringBuilder.Append('>');
                 }
                 
-                stringBuilder.Append(i).Append("fps (");
-                
-                for (int j = 0; j < millisecondStringBuilder.Length; j++)
-                {
-                    stringBuilder.Append(millisecondStringBuilder[j]);
-                }
-                    
-                stringBuilder.Append("ms)");
+                stringBuilder.Append(i).Append("fps (").Append(millisecondStringBuilder).Append("ms)");
 
                 frameRateStrings[i] = ToCharArray(stringBuilder);
 
@@ -1343,13 +1363,8 @@ namespace Microsoft.MixedReality.Profiling
                 {
                     stringBuilder.Append('<');
                 }
-                
-                for (int j = 0; j < millisecondStringBuilder.Length; j++)
-                {
-                    stringBuilder.Append(millisecondStringBuilder[j]);
-                }
                     
-                stringBuilder.Append("ms");
+                stringBuilder.Append(millisecondStringBuilder).Append("ms");
 
                 gpuFrameRateStrings[i] = ToCharArray(stringBuilder);
 
@@ -1363,20 +1378,27 @@ namespace Microsoft.MixedReality.Profiling
             characterScale = new Vector3(fontCharacterSize.x * fontScale.x, fontCharacterSize.y * fontScale.y, 1.0f);
 
             Texture mainTexture = material.mainTexture;
-            float w = 1f / mainTexture.width;
-            float h = 1f / mainTexture.height;
+            float width = fontCharacterSize.x / mainTexture.width;
+            float height = fontCharacterSize.y / mainTexture.height;
             for (char c = ' '; c < characterUVs.Length; ++c)
             {
                 int index = c - ' ';
-                float height = (float)fontCharacterSize.y * h;
-                float x = ((float)(index % fontColumns) * fontCharacterSize.x) * w;
-                float y = ((float)(index / fontColumns) * fontCharacterSize.y) * h;
+                float x = index % fontColumns * width;
+                float y = index / fontColumns * height;
                 characterUVs[c] = new Vector4(x, 1.0f - height - y, 0.0f, 0.0f);
             }
         }
 
         private Vector3 CalculateWindowPosition(Camera mainCamera, Quaternion cameraRotation, Vector3 cameraPosition = default)
         {
+#if CUSTOM
+            int screenWidth = Screen.width;
+            int screenHeight = Screen.height;
+            var xOffset = screenWidth * defaultWindowSize.x / 2.0f * windowScale;
+            var yOffset = screenHeight * defaultWindowSize.y * windowScale;
+            Vector3 position = mainCamera.ScreenToWorldPoint(
+                new Vector3(screenWidth - xOffset, screenHeight - yOffset, mainCamera.nearClipPlane + 0.25f));
+#else
             Vector3 position;
 
             if (transformToFollow != null)
@@ -1388,6 +1410,7 @@ namespace Microsoft.MixedReality.Profiling
                 float windowDistance = Mathf.Max(16.0f / mainCamera.fieldOfView, mainCamera.nearClipPlane + 0.25f);
                 position = cameraPosition + cameraRotation * Vector3.forward * windowDistance;
             }
+#endif // CUSTOM
 
             Vector3 horizontalOffset = cameraRotation * Vector3.right * windowOffset.x;
             Vector3 verticalOffset = cameraRotation * Vector3.up * windowOffset.y;
@@ -1433,8 +1456,8 @@ namespace Microsoft.MixedReality.Profiling
             Vector4 spaceUV = characterUVs[' '];
 
             Vector3 position = data.Position;
-            position -= Vector3.up * characterScale.y * 0.5f;
-            position += (data.RightAligned) ? Vector3.right * -characterScale.x * 0.5f : Vector3.right * characterScale.x * 0.5f;
+            position -= Vector3.up * (characterScale.y * 0.5f);
+            position += (data.RightAligned) ? Vector3.right * (-characterScale.x * 0.5f) : Vector3.right * (characterScale.x * 0.5f);
 
             for (int i = 0; i < maxStringLength; ++i)
             {
@@ -1505,6 +1528,7 @@ namespace Microsoft.MixedReality.Profiling
 #if UNITY_STANDALONE_WIN || UNITY_WSA
         private KeywordRecognizer keywordRecognizer;
 
+        [System.Diagnostics.Conditional("KEYWORD")]
         private void BuildKeywordRecognizer()
         {
             if (toggleKeywords.Length != 0)
@@ -1578,14 +1602,10 @@ namespace Microsoft.MixedReality.Profiling
             data.Prefix.AsSpan().CopyTo(buffer);
             bufferIndex += data.Prefix.Length;
 
-            bool usingMillions = false;
-            float total = count / 1000.0f;
-
-            if (total > 1000.0f)
-            {
-                total /= 1000.0f;
-                usingMillions = true;
-            }
+            bool usingMillions = count >= 1_000_000;
+            float total = usingMillions
+                ? count / 1_000_000.0f
+                : count / 1_000.0f;
 
             bufferIndex = FtoA(total, displayedDecimalDigits, buffer, bufferIndex);
 
@@ -1707,7 +1727,11 @@ namespace Microsoft.MixedReality.Profiling
                 // in Windows. But this is not available on all platforms (like WebGL) so instead return Profiler.GetTotalReservedMemoryLong()
                 // which is the total memory Unity has reserved for current and future allocations.
                 var usedMemory = systemUsedMemoryRecorder.LastValue;
+#if CUSTOM
+                return (usedMemory != 0) ? (ulong)usedMemory : (ulong)Profiler.GetTotalAllocatedMemoryLong();
+#else
                 return (usedMemory != 0) ? (ulong)usedMemory : (ulong)Profiler.GetTotalReservedMemoryLong();
+#endif // CUSTOM
 #endif
             }
         }
